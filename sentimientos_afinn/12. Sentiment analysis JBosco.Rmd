@@ -1,0 +1,314 @@
+---
+title: "Candidates Sentiment analysis"
+author: "Daniel Robles"
+date: "6/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+knitr::opts_chunk$set(include = TRUE,
+                      echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      comment = NA, # Remove "##" from results
+                      fig.width=16, fig.height=9)
+```
+
+Check github [here](https://github.com/jboscomendoza/rpubs/tree/master/sentimientos_afinn)
+
+```{r}
+library(vctrs)
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(lubridate)
+library(zoo)
+library(scales)
+```
+
+Load candidates tweets to develop sentiment analysis
+
+```{r}
+tuits <- read.csv("tuits_candidatos.csv", stringsAsFactors = F, fileEncoding = "latin1") %>%
+  tbl_df()
+head(tuits,3)
+```
+
+Load the lexicon to make the sentiment analysis
+
+```{r}
+afinn <- read.csv("lexico_afinn.en.es.csv", stringsAsFactors = F, fileEncoding = "latin1") %>%
+  tbl_df()
+head(afinn,3)
+```
+
+Separate date/hour in column "created_at", then "date. Take 2018 tweets only.
+
+```{r}
+tuits <-
+  tuits %>%
+  separate(created_at, into = c("Fecha", "Hora"), sep = " ") %>%
+  separate(Fecha, into = c("Dia", "Mes", "Periodo"), sep = "/",
+           remove = FALSE) %>%
+  mutate(Fecha = dmy(Fecha), # Create column for date with lubridate
+         Semana = week(Fecha) %>% as.factor(), # Create column for week of the year
+         text = tolower(text)) %>% # Convert text column to lowercase
+  filter(Periodo == 2018) # Take 2018 year only
+head(tuits,3)
+```
+
+Inner join among `tuits` and `afinn` lexicon
+
+```{r}
+tuits_afinn <-
+  tuits %>%
+  
+  # From "text", make rows for each string, assign the resulting words to the column "Palabra"
+  unnest_tokens(input = "text", output = "Palabra") %>%
+  # Make inner join with afinn lexicon in the column "Palabra"
+  inner_join(afinn, ., by = "Palabra") %>%
+  # Create column "Tipo" depending on "Puntuacion" as positive or negative
+  mutate(Tipo = ifelse(Puntuacion > 0, "Positiva", "Negativa")) %>%
+  # screen_name -> "Candidato"
+  rename("Candidato" = screen_name)
+
+head(tuits_afinn,3)
+```
+
+Now summarize the mean of these evaluations (in tuits_adinn) by candidate, then we join with the `tuits` tibble.
+
+```{r}
+tuits <-
+  tuits_afinn %>%
+  # Group by status id
+  group_by(status_id) %>%
+  # Compute the summarized mean for "Puntuacion"
+  summarise(Puntuacion_tuit = mean(Puntuacion)) %>%
+  # Leftjoin summarized `tuits_afinn` with `tuits` by "status_id" (tweet id) column
+  # to retrieve mean for each tweet.
+  left_join(tuits, ., by = "status_id") %>%
+  # Avoid calculated NA values
+  mutate(Puntuacion_tuit = ifelse(is.na(Puntuacion_tuit), 0, Puntuacion_tuit)) %>%
+  # screen_name -> "Candidato"
+  rename("Candidato" = screen_name)
+head(tuits,3)
+```
+
+Total tweets by candidate
+
+```{r}
+tuits_afinn %>%
+  count(Candidato) # count grouped by "Candidato"
+```
+
+# Count vocabulary used by each candidate
+
+```{r}
+tuits_afinn %>%
+  group_by(Candidato) %>%
+  # Unique words
+  distinct(Palabra) %>%
+  # Count these unique words by candidate
+  count()
+```
+
+By using a function, we automate two barplots with the top 10 of both positive and negative words used by each candidate.
+
+* We observe a high count for the word "no", so we filter the tibble to avoid these incidences:
+  
+```{r}
+# Theme for the graphs
+tema_graf <-
+  theme_minimal() +
+  theme(text = element_text(family = "serif"),
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect(fill = "#EBEBEB", colour = NA),
+        legend.position = "none",
+        legend.box.background = element_rect(fill = "#EBEBEB", colour = NA))
+```
+
+```{r}
+tuits_afinn <-
+  tuits_afinn %>%
+  filter(Palabra != "no")
+```
+
+```{r}
+par(mfrow = c(2,1))
+
+map(c("Positiva", "Negativa"), function(sentimiento) {
+  tuits_afinn %>%
+    filter(Tipo ==  sentimiento) %>% # Filter according to fed `sentimiento`
+    
+    # Count words with `sentimiento` grouped by Candidatoand sort it in descending order
+    group_by(Candidato) %>%
+    count(Palabra, sort = T) %>%
+    
+    # Take Top 10
+    top_n(n = 10, wt = n) %>%
+    #Plot the result for `sentimiento`
+    ggplot() +
+    aes(Palabra, n, fill = Candidato) +
+    geom_col() +
+    facet_wrap("Candidato", scales = "free") +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_flip() +
+    labs(title = sentimiento) +
+    tema_graf
+})
+```
+
+Add a column with the mean evaluation for each tweet, group by `status_id`, `Candidato` and `Fecha` to summarize mean of the tweets evaluation.
+
+```{r}
+tuits_afinn_fecha <-
+  tuits_afinn %>%
+  group_by(status_id) %>%
+  mutate(Suma = mean(Puntuacion)) %>%
+  group_by(Candidato, Fecha) %>%
+  summarise(Media = mean(Puntuacion))
+head(tuits_afinn_fecha,3)
+```
+
+```{r}
+par(mfrow = c(3,2))
+#-----------------------------------------1
+tuits_afinn_fecha %>%
+  ggplot() +
+  aes(Fecha, Media, color = Candidato) +
+  geom_line() +
+  ggtitle("Plot date vs. (daily) evaluation") +
+  tema_graf +
+  theme(legend.position = "top")
+#-----------------------------------------2
+tuits_afinn_fecha %>%
+  ggplot() +
+  aes(Fecha, Media, color = Candidato) +
+  geom_hline(yintercept = 0, alpha = .35) +
+  geom_line() +
+  facet_grid(Candidato~.) + # Create the same plot individually for each candidate
+  ggtitle("Plot date vs. (daily) evaluation by individual cadidates") +
+  tema_graf + # Theme created before
+  theme(legend.position = "none")
+#-----------------------------------------3
+tuits_afinn_fecha %>%
+  ggplot() +
+  aes(Fecha, Media, color = Candidato) +
+  geom_smooth(method = "loess", fill = NA) +
+  coord_cartesian(ylim = c(-3, 3)) +
+  ggtitle("Plot date vs. (daily) evaluation with smooth lines") +
+  tema_graf
+#-----------------------------------------4
+tuits_afinn %>%
+  ggplot() +
+  aes(Fecha, Puntuacion, color = Candidato) +
+  geom_smooth(method = "loess", fill = NA) +
+  coord_cartesian(ylim = c(-3, 3)) +
+  ggtitle("Plot date vs. daily score") +
+  tema_graf
+#-----------------------------------------5
+tuits_afinn %>%
+  ggplot() +
+  aes(Fecha, Puntuacion, color = Candidato) +
+  geom_smooth(method = "loess", fill = NA) +
+  geom_point(color = "#E5E5E5") + # To compare with individual tweets
+  facet_wrap(~Candidato) +
+  ggtitle("Plot date vs. daily score by individual candidates (smooth and tweets to compare)") +
+  tema_graf
+#-----------------------------------------6
+tuits_afinn_fecha %>%
+  ggplot() +
+  aes(Fecha, Media, color = Candidato) +
+  geom_point(color = "#E5E5E5") +
+  geom_smooth(method = "lm", fill = NA) +
+  facet_wrap(~Candidato) +
+  ggtitle("Plot date vs. (daily) evaluation with linear regression to compare with individual tweets by candidate") +
+  tema_graf
+```
+
+```{r}
+par(mfrow = c(3,2))
+#-----------------------------------------1
+tuits_afinn_fecha %>%
+  group_by(Candidato) %>%
+  mutate(MediaR = rollmean(Media, k = 3, align = "right", na.pad = TRUE)) %>% # media móvil
+  ggplot() +
+  aes(Fecha, MediaR, color = Candidato) +
+  geom_hline(yintercept = 0, alpha = .35) +
+  geom_line() +
+  facet_grid(Candidato~.) +
+  ggtitle("Plot Date vs. Rollmean (variation from previous date) by candidate.") +
+  tema_graf
+#-----------------------------------------2
+tuits_afinn_fecha %>%
+  ggplot() +
+  aes(Fecha, Media, color = Candidato) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(~Candidato) +
+  tema_graf
+#-----------------------------------------3
+# This can be improved with ggplot parameters for the proportion in geom_col, not by preliminary treatment
+tuits_afinn %>%
+  count(Candidato, Tipo) %>%
+  group_by(Candidato) %>%
+  mutate(Proporcion = n / sum(n)) %>%
+  ggplot() +
+  aes(Candidato, Proporcion, fill = Tipo) +
+  geom_col() +
+  scale_y_continuous(labels = percent_format()) +
+  ggtitle("Proportional polarity by candidate") +
+  tema_graf +
+  theme(legend.position = "top")
+#-----------------------------------------4
+tuits_afinn %>%
+  group_by(Candidato, Fecha) %>%
+  count(Tipo) %>%
+  mutate(Proporcion = n / sum(n)) %>%
+  ggplot() +
+  aes(Fecha, Proporcion, fill = Tipo) +
+  geom_col(width = 1) +
+  facet_grid(Candidato~.) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_x_date(expand = c(0, 0)) +
+  ggtitle("Proportional polarity by date for each candidate") +
+  tema_graf +
+  theme(legend.position = "top")
+#-----------------------------------------5
+tuits %>%
+  ggplot() +
+  aes(Candidato, Puntuacion_tuit, fill = Candidato) +
+  geom_boxplot() +
+  ggtitle("Boxplot of tweet scores for each candidate") +
+  tema_graf
+#-----------------------------------------6
+tuits %>%
+  mutate(Mes = factor(Mes)) %>%
+  ggplot() +
+  aes(Mes, Puntuacion_tuit, fill = Candidato) +
+  geom_boxplot(width = 1) +
+  facet_wrap(~Candidato) +
+  ggtitle("Monthly score boxplots by candidate") +
+  tema_graf +
+  theme(legend.position = "none")
+```
+
+```{r}
+par(mfrow = c(1,2))
+#-----------------------------------------1
+tuits %>%
+  ggplot() +
+  aes(Puntuacion_tuit, color = Candidato) +
+  geom_density() +
+  facet_wrap(~Candidato) +
+  ggtitle("Scores distribution by candidate") +
+  tema_graf
+#-----------------------------------------2
+tuits %>%
+  ggplot() +
+  aes(Puntuacion_tuit, color = Candidato) +
+  geom_density() +
+  facet_grid(Candidato~Mes) +
+  ggtitle("Monthly scores distributions by Candidate") +
+  tema_graf
+```
