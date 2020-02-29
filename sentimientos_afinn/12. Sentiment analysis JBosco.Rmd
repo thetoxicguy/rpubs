@@ -14,7 +14,7 @@ knitr::opts_chunk$set(include = TRUE,
                       fig.width=16, fig.height=9)
 ```
 
-Check github [here](https://github.com/jboscomendoza/rpubs/tree/master/sentimientos_afinn)
+Check [Juan Bosco's blog](https://www.rpubs.com/jboscomendoza) and his github repositoty [here](https://github.com/jboscomendoza/rpubs/tree/master/sentimientos_afinn)
 
 ```{r}
 library(vctrs)
